@@ -1,0 +1,6 @@
+{
+  "_note": "練習日ごとの条件。elev=練習場の標高(m, 国土地理院), temp=練習時の気温(℃, Open-Meteo過去データの10〜18時平均。練習時刻が分かれば修正)",
+  "2026-06-11": { "range": "YOKOHAMA SPORTS COMPLEX", "elev": 64, "temp": 23 },
+  "2026-07-09": { "range": "YOKOHAMA SPORTS COMPLEX", "elev": 64, "temp": 28 },
+  "2026-09-29": { "range": "エースガーデン（八王子）", "elev": 230, "temp": 20.5 }
+}
