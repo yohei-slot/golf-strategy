@@ -12,6 +12,8 @@ const course = await fetch('courses/kisokoma.json').then((r) => r.json());
 const bundledCsv = await fetch('data/shots.csv').then((r) => (r.ok ? r.text() : null)).catch(() => null);
 const baseShots = M.parseShotsCsv(bundledCsv ?? await fetch('sample/shots_sample.csv').then((r) => r.text()), 'yd');
 const baseIsSample = !bundledCsv;
+// 一時的な推定距離（データの古い番手を他の番手から補間）
+const estimates = await fetch('data/estimates.json').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
 // 練習日ごとの条件（練習場の標高・気温）。ショットの日付で紐づける
 const sessions = await fetch('data/sessions.json').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
 const withConditions = (s) => {
@@ -47,6 +49,7 @@ function rebuildStats() {
   const localClubs = new Set(local.map((s) => s.club));
   const shots = [...baseShots.filter((s) => !localClubs.has(s.club)), ...local].map(withConditions);
   stats = M.computeStats(shots, settings);
+  if (settings.useEstimates) stats = M.applyEstimates(stats, estimates);
   clubs = M.sortedClubs(stats);
   if (!stats[state.club]) state.club = clubs.includes('7I') ? '7I' : clubs[0];
 }
@@ -266,7 +269,7 @@ function recompute() {
   $('#info').innerHTML = `
     <div><span class="big">${lbl(state.club)}</span>
       平均キャリー <b>${fmtD(stat.carryMean * settings.carryFactor * state.altF)}</b>
-      <span class="sub">（${stat.n}球・練習時比 ${fmtPct(state.altF / stat.practiceAir - 1)}）</span></div>
+      <span class="sub">（${stat.estimated ? `<b>推定</b>: ${stat.estimated.from.map(lbl).join('・')}から補間` : `${stat.n}球`}・練習時比 ${fmtPct(state.altF / stat.practiceAir - 1)}）</span></div>
     <div>狙い <b>${fmtD(aimDist)}</b>・高低差 <b>${hDisp}</b>${state.wind.speed ? `・風 ${windLabel()}` : ''}
       → 実質 <span class="em">${fmtD(pl)}</span>　おすすめ <span class="em">${state.recClub ? lbl(state.recClub) : '—'}</span></div>
     <div>着弾中心 <b>${fmtD(sm.along)}</b> ${side(sm.side)}${toGreen != null ? `・グリーンまで残り <b>${fmtD(toGreen)}</b>` : ''}</div>
@@ -284,7 +287,7 @@ function windLabel() {
 function renderClubs() {
   const box = $('#clubs');
   const html = clubs.map((c) => `<button class="chip${c === state.club ? ' on' : ''}${c === state.recClub ? ' rec' : ''}" data-c="${c}">
-    <b>${lbl(c)}</b><small>${fmtN(stats[c].carryMean * settings.carryFactor * state.altF)}</small></button>`).join('');
+    <b>${lbl(c)}${stats[c].estimated ? '<sup>推</sup>' : ''}</b><small>${fmtN(stats[c].carryMean * settings.carryFactor * state.altF)}</small></button>`).join('');
   if (box.dataset.html !== html) {
     box.innerHTML = html;
     box.dataset.html = html;
@@ -518,6 +521,8 @@ function fillSettings() {
   $('#importUnit').value = settings.importUnit;
   $('#carryFactor').value = settings.carryFactor;
   $('#halfLifeDays').value = String(settings.halfLifeDays);
+  $('#useEstimates').checked = settings.useEstimates;
+  $('#estimateRow').hidden = !Object.keys(estimates).some((k) => !k.startsWith('_'));
   $('#rangeElev').value = settings.rangeElev;
   $('#rangeTemp').value = settings.rangeTemp;
   $('#altitudePct').value = settings.altitudePct;
@@ -540,6 +545,7 @@ function readSettings() {
     importUnit: $('#importUnit').value,
     carryFactor: num('carryFactor', 1),
     halfLifeDays: num('halfLifeDays', 60),
+    useEstimates: $('#useEstimates').checked,
     rangeElev: num('rangeElev', 230),
     rangeTemp: num('rangeTemp', 20),
     altitudePct: num('altitudePct', 4),
@@ -554,7 +560,7 @@ function readSettings() {
   renderStatTable();
   scheduleRecompute();
 }
-dlg.querySelectorAll('input[type=number], input#esriKey, select').forEach((el) => el.addEventListener('change', readSettings));
+dlg.querySelectorAll('input[type=number], input#esriKey, input#useEstimates, select').forEach((el) => el.addEventListener('change', readSettings));
 
 function renderDataStatus() {
   const n = Object.values(stats).reduce((s, v) => s + v.n, 0);
@@ -570,7 +576,7 @@ function renderStatTable() {
     const s = stats[c];
     const f = settings.carryFactor;
     const pf = f * s.practiceAir;   // 練習時の条件に戻して表示
-    return `<tr><td>${lbl(c)}</td><td>${s.n}</td><td>${fmtN(s.carryMean * pf)}</td><td>±${fmtN(s.carrySd * pf)}</td>
+    return `<tr><td>${lbl(c)}${s.estimated ? `<small>（推定・元${fmtN(s.estimated.originalCarry * pf)}）</small>` : ''}</td><td>${s.n}</td><td>${fmtN(s.carryMean * pf)}</td><td>±${fmtN(s.carrySd * pf)}</td>
       <td>${s.sideMean >= 0 ? 'R' : 'L'}${fmtN(Math.abs(s.sideMean))}</td><td>±${fmtN(s.sideSd * f)}</td><td>${Math.round(M.landingAngle(s))}°${s.landingAngle == null ? '*' : ''}</td><td>${fmtDate(s.updatedAt)}</td></tr>`;
   }).join('');
   $('#statTable').innerHTML = `<thead><tr><th>番手</th><th>球数</th><th>キャリー(${u})※</th><th>前後σ</th><th>左右平均</th><th>左右σ</th><th>落下角</th><th>更新</th></tr></thead><tbody>${rows}</tbody>`;

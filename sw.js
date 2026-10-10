@@ -1,6 +1,6 @@
 // アプリ本体: 取得できればネットワーク優先（更新を反映）、圏外ならキャッシュ
 // 地理院タイル: キャッシュ優先（一度取ったものは圏外でも表示できる）
-const SHELL = 'shell-v3';
+const SHELL = 'shell-v4';
 const TILES = 'gsi-tiles-v1';
 const TILE_HOSTS = ['cyberjapandata.gsi.go.jp', 'server.arcgisonline.com', 'ibasemaps-api.arcgis.com'];
 const SHELL_FILES = [

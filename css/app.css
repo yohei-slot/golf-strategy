@@ -75,6 +75,7 @@ button { cursor: pointer; }
   background: var(--chip); padding: 4px 8px; text-align: center; line-height: 1.15;
 }
 .chip b { display: block; font-size: 16px; }
+.chip sup { font-size: 9px; font-weight: 700; margin-left: 1px; }
 .chip small { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .chip.on { background: var(--accent); color: var(--accent-ink); }
 .chip.on small { color: inherit; opacity: .85; }

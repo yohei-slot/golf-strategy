@@ -20,6 +20,7 @@ export const DEFAULT_SETTINGS = {
   courseTemp: 20,      // ラウンド中の気温(℃)
   altitudePct: 4,      // 標高差1000mあたりのキャリー増加率(%)（約1.2%/1000ft）。気温にも同じ空気密度の関係を使う
   wedgeLofts: { GW: 48, SW: 52, LW: 56 },   // ウェッジはロフト角で表示する
+  useEstimates: true,  // data/estimates.json の推定距離を使う
 };
 
 // 画面表示用の番手名（ウェッジはロフト角）
@@ -197,6 +198,29 @@ export function computeStats(shots, settings = DEFAULT_SETTINGS) {
     };
   }
   return stats;
+}
+
+/**
+ * 推定距離の適用（データが古い・少ない番手の一時的な代替）
+ * estimates: { 番手: { between: [番手A, 番手B], t } } → 平均キャリーを A + (B − A) × t に合わせる。
+ * ばらつきの形はその番手自身のショットを比率で伸縮して残す。
+ */
+export function applyEstimates(stats, estimates) {
+  const out = { ...stats };
+  for (const [club, spec] of Object.entries(estimates || {})) {
+    const s = stats[club], a = stats[spec.between?.[0]], b = stats[spec.between?.[1]];
+    if (!s || !a || !b || club.startsWith('_')) continue;
+    const target = a.carryMean + (b.carryMean - a.carryMean) * spec.t;
+    const r = target / s.carryMean;
+    out[club] = {
+      ...s,
+      carryMean: target, carrySd: s.carrySd * r, sideMean: s.sideMean * r, sideSd: s.sideSd * r,
+      kdeCarryH: s.kdeCarryH * r, kdeSideH: s.kdeSideH * r,
+      shots: s.shots.map((x) => ({ ...x, carry: x.carry * r, side: x.side * r })),
+      estimated: { from: spec.between, originalCarry: s.carryMean },
+    };
+  }
+  return out;
 }
 
 // 重みに比例してショットを1球選ぶ
