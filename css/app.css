@@ -166,3 +166,19 @@ th:first-child, td:first-child { text-align: left; }
 #legend .dot { display: inline-block; border-radius: 50%; margin: 0 5px 0 4px; }
 #legend .dot-mean { width: 9px; height: 9px; background: #111827; border: 2px solid #fff; }
 #legend .dot-sim { width: 5px; height: 5px; background: #fff; opacity: .8; margin: 0 7px 0 6px; }
+
+/* 距離リングのラベル・2グリーン目 */
+.mk-ring { background: rgba(255, 255, 255, .9); color: #111827; font-size: 11px; font-weight: 800; padding: 0 4px; border-radius: 4px; pointer-events: none; }
+.mk-hole2 { width: 16px; height: 16px; border-radius: 50%; background: rgba(250, 204, 21, .55); color: #111827; font-size: 9px; font-weight: 800; display: grid; place-items: center; border: 1.5px solid #111827; }
+#banner #bannerSkip { margin-right: 4px; }
+.wind-guide { flex-basis: 100%; font-size: 12px; }
+.wind-guide summary { cursor: pointer; color: var(--accent); font-weight: 700; }
+.wind-guide table { margin-top: 4px; font-size: 11px; }
+.wind-guide td, .wind-guide th { text-align: left; white-space: normal; }
+/* マーカーの重なり順: リングの数字 < ホール < 打つ位置・狙い */
+.mk-ring { z-index: 0; }
+.mk-hole, .mk-hole2, .mk-tee { z-index: 1; }
+.mk-ball, .mk-aim, .mk-dist { z-index: 3; }
+#top button { white-space: nowrap; flex: 0 0 auto; }
+#top select { min-width: 0; flex: 0 1 auto; max-width: 46vw; text-overflow: ellipsis; }
+.wind-speed input.temp-input { flex: 0 0 64px; min-width: 0; }

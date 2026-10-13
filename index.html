@@ -20,13 +20,14 @@
   <header id="top">
     <select id="hole" aria-label="ホール"></select>
     <button id="btnHoleEdit" title="ティー/グリーンを登録し直す">登録</button>
+    <button id="btnGreen" title="使うグリーンを切り替え（2グリーン）" hidden>AG</button>
     <span class="spacer"></span>
     <button id="btnUp" title="狙い方向を上にする" aria-label="狙い方向を上に">⇧</button>
     <button id="btnGps" title="現在地を打つ位置にする" aria-label="現在地">◎</button>
     <button id="btnSettings" title="設定・データ" aria-label="設定">⚙</button>
   </header>
 
-  <div id="banner" hidden><span id="bannerText"></span><button id="bannerCancel">やめる</button></div>
+  <div id="banner" hidden><span id="bannerText"></span><button id="bannerSkip" hidden>なし</button><button id="bannerCancel">やめる</button></div>
   <div id="toast" hidden></div>
   <div id="legend" aria-label="凡例">
     <div class="lg-title">着弾範囲</div>
@@ -53,6 +54,8 @@
         <button data-v="ball">タップ=打つ位置</button>
       </div>
       <button id="btnDots" class="pill">点群 表示</button>
+      <button id="btnRings" class="pill">リング 表示</button>
+      <button id="btnCalib" class="pill" title="カートナビや距離杭の残り距離で打つ位置を合わせる">残り距離で補正</button>
       <button id="btnWind" class="pill">風 なし</button>
     </div>
     <div id="windPanel" hidden>
@@ -71,7 +74,20 @@
         <input type="number" id="courseTemp" step="1" min="-10" max="45" aria-label="気温" class="temp-input">
         <span class="lbl">℃</span>
         <button id="btnTempNow" class="pill">現在の気温</button>
+        <button id="btnWindNow" class="pill">予報の風</button>
       </div>
+      <details class="wind-guide">
+        <summary>風速の目安</summary>
+        <table>
+          <tr><th>風速</th><th>ピンフラッグ</th><th>木・体感</th></tr>
+          <tr><td>0〜1m/s</td><td>垂れ下がる</td><td>煙がまっすぐ上がる</td></tr>
+          <tr><td>2〜3m/s</td><td>ときどき揺れる</td><td>顔に風を感じる・葉が鳴る</td></tr>
+          <tr><td>4〜5m/s</td><td>斜め（約45°）になびく</td><td>細い枝が絶えず揺れる</td></tr>
+          <tr><td>6〜7m/s</td><td>ほぼ水平にはためく</td><td>小枝ごと揺れる・砂ぼこりが立つ</td></tr>
+          <tr><td>8m/s〜</td><td>水平で激しくバタつく</td><td>木全体が揺れる・歩きにくい</td></tr>
+        </table>
+        <p class="hint">足元より、ボールが飛ぶ高さ（20〜30m）の木のてっぺんの揺れを見る。谷や林の中は風が弱く感じやすい。</p>
+      </details>
       <p class="hint">矢印は風の流れる向き（画面上=打つ方向）。気温は空気の薄さとして飛距離に反映。</p>
     </div>
   </section>
@@ -81,6 +97,10 @@
       <h2>設定・データ</h2>
       <button value="close" aria-label="閉じる">✕</button>
     </form>
+
+    <h3>コース</h3>
+    <label class="field">ラウンドするコース<select id="courseSel"></select></label>
+    <p class="hint">コースを切り替えると画面を読み込み直します。ホール登録はコースごとに保存されます。</p>
 
     <h3>ショットデータ</h3>
     <p id="dataStatus" class="status"></p>
@@ -104,6 +124,9 @@
       <select id="imagery"><option value="gsi">国土地理院</option><option value="esri">Esri（高精細）</option></select>
     </label>
     <label class="field">Esri APIキー（任意）<input type="text" id="esriKey" autocomplete="off" placeholder="未設定" style="width:150px"></label>
+    <label class="field">距離リングの基準（0=グリーンセンター。エッジ表示のカートなら、エッジからセンターまでの距離を入力）
+      <input type="number" id="ringOffset" step="1" min="0" max="40">
+    </label>
     <label class="field">表示単位
       <select id="unit"><option value="yd">ヤード</option><option value="m">メートル</option></select>
     </label>

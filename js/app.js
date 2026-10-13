@@ -7,7 +7,10 @@ import { hdrContours } from './contour.js';
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
-const course = await fetch('courses/kisokoma.json').then((r) => r.json());
+// コース（設定で切替。切り替えると再読み込み）
+const courseList = await fetch('courses/index.json').then((r) => r.json());
+const courseId = courseList.some((c) => c.id === S.load('courseId')) ? S.load('courseId') : courseList[0].id;
+const course = await fetch(`courses/${courseId}.json`).then((r) => r.json());
 // 同梱のショットデータ（data/shots.csv）。無ければ架空のサンプル
 const bundledCsv = await fetch('data/shots.csv').then((r) => (r.ok ? r.text() : null)).catch(() => null);
 const baseShots = M.parseShotsCsv(bundledCsv ?? await fetch('sample/shots_sample.csv').then((r) => r.text()), 'yd');
@@ -28,7 +31,9 @@ let stats = {};
 let clubs = [];
 let holes = { ...course.holes, ...S.load(`holes.${course.id}`, {}) };
 
-const ui = S.load('ui', {});
+// 打つ位置などの画面状態はコースごとに保存（旧形式 'ui' は木曽駒のものとして引き継ぐ）
+const uiKey = `ui.${course.id}`;
+const ui = S.load(uiKey, course.id === 'kisokoma' ? S.load('ui', {}) : {});
 const state = {
   hole: ui.hole ?? '',
   ball: ui.ball || course.center,
@@ -41,7 +46,14 @@ const state = {
   recClub: null,
   altF: 1,   // いまの打つ位置での標高補正倍率
   showDots: ui.showDots ?? true,
+  showRings: ui.showRings ?? true,
+  greenSel: ui.greenSel ?? 'A',   // 2グリーンのコースで使うグリーン
+  gpsAcc: null,                   // 直近のGPS測位 { center, radius }
 };
+
+const twoGreens = course.greens === 2;
+// いま使うグリーン（2グリーンのコースで B を選んでいて、そのホールに B が登録されていれば B）
+const greenOf = (h) => (twoGreens && state.greenSel === 'B' && h.green2 ? h.green2 : h.green);
 
 function rebuildStats() {
   // 端末で取り込んだ番手は同梱データより優先
@@ -77,8 +89,9 @@ function bakeAim() {
 let persistTimer;
 function persist() {
   clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => S.save('ui', {
-    hole: state.hole, ball: state.ball, aim: aimPoint(), club: state.club, wind: state.wind, showDots: state.showDots,
+  persistTimer = setTimeout(() => S.save(uiKey, {
+    hole: state.hole, ball: state.ball, aim: aimPoint(), club: state.club, wind: state.wind,
+    showDots: state.showDots, showRings: state.showRings, greenSel: state.greenSel,
   }), 400);
 }
 
@@ -144,7 +157,7 @@ const aimMk = new maplibregl.Marker({ element: aimEl, draggable: true }).setLngL
 const distMk = new maplibregl.Marker({ element: distEl, anchor: 'bottom', offset: [0, -22] }).setLngLat(aimPoint()).addTo(map);
 
 ballMk.on('dragstart', bakeAim);
-ballMk.on('drag', () => { state.ball = ballMk.getLngLat().toArray(); scheduleRecompute(); });
+ballMk.on('drag', () => { state.ball = ballMk.getLngLat().toArray(); clearGps(); scheduleRecompute(); });
 ballMk.on('dragend', persist);
 aimMk.on('drag', () => {
   state.aimBase = aimMk.getLngLat().toArray();
@@ -163,7 +176,11 @@ const LEVELS = [
 ];
 const empty = { type: 'FeatureCollection', features: [] };
 map.on('load', () => {
-  for (const id of ['ell', 'dots', 'lines', 'center']) map.addSource(id, { type: 'geojson', data: empty });
+  for (const id of ['rings', 'gps', 'ell', 'dots', 'lines', 'center']) map.addSource(id, { type: 'geojson', data: empty });
+  map.addLayer({ id: 'rings', type: 'line', source: 'rings',
+    paint: { 'line-color': '#ffffff', 'line-width': ['case', ['get', 'major'], 1.6, 0.7], 'line-opacity': ['case', ['get', 'major'], 0.85, 0.45] } });
+  map.addLayer({ id: 'gps-fill', type: 'fill', source: 'gps', paint: { 'fill-color': '#3b82f6', 'fill-opacity': 0.15 } });
+  map.addLayer({ id: 'gps-line', type: 'line', source: 'gps', paint: { 'line-color': '#60a5fa', 'line-width': 1.5 } });
   map.addLayer({ id: 'ell-fill', type: 'fill', source: 'ell',
     paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['get', 'op'] } });
   map.addLayer({ id: 'dots', type: 'circle', source: 'dots',
@@ -178,6 +195,7 @@ map.on('load', () => {
   map.addLayer({ id: 'center', type: 'circle', source: 'center',
     paint: { 'circle-radius': 5, 'circle-color': '#111827', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
   renderHoleMarkers();
+  renderRings();
   if (state.hole && holes[state.hole] && !ui.ball) goHole(state.hole);
   scheduleRecompute();
 });
@@ -187,8 +205,7 @@ map.on('click', (e) => {
   if (state.editing) return handleEditClick(p);
   if (state.tapMode === 'ball') {
     bakeAim();
-    state.ball = p;
-    ballMk.setLngLat(p);
+    setBall(p);
   } else {
     state.aimBase = p;
     state.dirOffset = 0;
@@ -223,6 +240,7 @@ function recompute() {
 
   const origin = state.ball;
   const brg = G.bearing(origin, aim);
+  syncWind(brg);
   const h0 = dem.get(origin);
   const elev = h0 == null ? null : (x, y) => dem.get(G.toLngLat(origin, [x, y]));
   const pts = M.simulate({ stat, bearing: brg, wind: state.wind, elev, settings });
@@ -263,7 +281,7 @@ function recompute() {
   const side = (v) => (Math.abs(v) < 0.5 * M.YD ? '0' : `${v < 0 ? 'L' : 'R'}${fmtN(Math.abs(v))}`);
   const hDisp = dh == null ? '標高取得中' : `${dh >= 0 ? '↑' : '↓'}${Math.abs(dh).toFixed(1)}m`;
   const hole = holes[state.hole];
-  const toGreen = hole ? G.distance(toLL(meanXY), hole.green) : null;
+  const toGreen = hole ? G.distance(toLL(meanXY), greenOf(hole)) : null;
 
   distEl.textContent = fmtD(aimDist);
   $('#info').innerHTML = `
@@ -278,9 +296,17 @@ function recompute() {
   renderClubs();
 }
 
+const nearest45 = (d) => ((Math.round(d / 45) * 45) % 360 + 360) % 360;
 function windLabel() {
   const names = { 0: 'アゲ', 45: '右前から', 90: '右から', 135: '右後ろから', 180: 'フォロー', 225: '左後ろから', 270: '左から', 315: '左前から' };
-  return `${names[state.wind.fromRel] ?? ''}${state.wind.speed}m/s`;
+  return `${names[nearest45(state.wind.fromRel)]}${state.wind.speed}m/s${state.wind.fromAbs != null ? '(予報)' : ''}`;
+}
+// 予報の風（方位が絶対値）は、打つ方向が変わるたびに打球方向基準の向きへ換算し直す
+function syncWind(brg) {
+  const w = state.wind;
+  if (w.fromAbs == null) return;
+  const rel = ((w.fromAbs - deg(brg)) % 360 + 360) % 360;
+  if (Math.abs(rel - w.fromRel) > 0.5) { state.wind = { ...w, fromRel: rel }; renderWind(); }
 }
 
 // ---------- 番手 ----------
@@ -347,15 +373,29 @@ function renderWind() {
   $('#windSpeed').value = w.speed;
   $('#windSpeedOut').textContent = `${w.speed} m/s`;
   $$('#compass button').forEach((b) => b.classList.toggle('on',
-    b.dataset.a === 'off' ? !w.speed : !!w.speed && +b.dataset.a === w.fromRel));
+    b.dataset.a === 'off' ? !w.speed : !!w.speed && +b.dataset.a === nearest45(w.fromRel)));
 }
 $('#btnWind').addEventListener('click', () => { $('#windPanel').hidden = !$('#windPanel').hidden; });
 $('#compass').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
   if (b.dataset.a === 'off') state.wind = { ...state.wind, speed: 0 };
-  else state.wind = { fromRel: +b.dataset.a, speed: state.wind.speed || 3 };
+  else state.wind = { fromRel: +b.dataset.a, speed: state.wind.speed || 3 };   // 手入力は打球方向基準（予報の方位は解除）
   renderWind(); scheduleRecompute(); persist();
+});
+$('#btnWindNow').addEventListener('click', async () => {
+  try {
+    const [lon, lat] = state.ball;
+    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}`
+      + '&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms');
+    const c = (await r.json()).current;
+    state.wind = { speed: Math.round(c.wind_speed_10m * 2) / 2, fromAbs: c.wind_direction_10m, fromRel: 0 };
+    syncWind(G.bearing(state.ball, aimPoint()));
+    renderWind(); scheduleRecompute(); persist();
+    toast(`予報の風 ${c.wind_speed_10m}m/s（最大瞬間 ${c.wind_gusts_10m}m/s）を反映。地上10mの面的な予報なので、旗や木で確認を`, 5000);
+  } catch {
+    toast('風を取得できませんでした（圏外など）');
+  }
 });
 $('#windSpeed').addEventListener('input', (e) => {
   state.wind = { ...state.wind, speed: parseFloat(e.target.value) };
@@ -404,24 +444,119 @@ $('#btnUp').addEventListener('click', () => {
 });
 
 // GPS
+function setBall(p) {
+  state.ball = p;
+  ballMk.setLngLat(p);
+  clearGps();
+}
+function clearGps() {
+  if (!state.gpsAcc) return;
+  state.gpsAcc = null;
+  map.getSource('gps')?.setData(empty);
+}
+function circlePolygon(center, r) {
+  const ring = Array.from({ length: 49 }, (_, i) => G.destination(center, (i / 48) * 2 * Math.PI, r));
+  return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] } };
+}
+// 最大8秒間測位を続け、誤差の小さい測位ほど重くして平均する（ばらつきは減るが、木や斜面による系統的なズレは残る）
 $('#btnGps').addEventListener('click', () => {
   if (!navigator.geolocation) return toast('この端末では位置情報が使えません');
-  toast('現在地を取得中…');
-  navigator.geolocation.getCurrentPosition((pos) => {
+  const fixes = [];
+  let done = false;
+  let id = null;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    if (id != null) navigator.geolocation.clearWatch(id);
+    clearTimeout(timer);
+    if (!fixes.length) return toast('位置情報を取得できませんでした');
+    const use = fixes.slice(-10);
+    const ws = use.map((f) => 1 / Math.max(1, f.acc) ** 2);
+    const W = ws.reduce((a, b) => a + b, 0);
+    const p = [use.reduce((t, f, i) => t + f.p[0] * ws[i], 0) / W, use.reduce((t, f, i) => t + f.p[1] * ws[i], 0) / W];
+    const best = Math.min(...use.map((f) => f.acc));
     bakeAim();
-    state.ball = [pos.coords.longitude, pos.coords.latitude];
-    ballMk.setLngLat(state.ball);
-    map.easeTo({ center: state.ball });
-    toast(`現在地を反映（誤差 約${Math.round(pos.coords.accuracy)}m）`);
+    setBall(p);
+    state.gpsAcc = { center: p, radius: best };
+    map.getSource('gps')?.setData({ type: 'FeatureCollection', features: [circlePolygon(p, best)] });
+    map.easeTo({ center: p });
+    toast(`現在地を反映（${use.length}回平均・誤差 約${Math.round(best)}m）。青い円の中のどこかにいます`, 4000);
     scheduleRecompute(); persist();
-  }, (err) => toast(`位置情報を取得できません（${err.message}）`), { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+  };
+  const timer = setTimeout(finish, 8000);
+  toast('測位中…（最大8秒）', 9000);
+  id = navigator.geolocation.watchPosition((pos) => {
+    fixes.push({ p: [pos.coords.longitude, pos.coords.latitude], acc: pos.coords.accuracy });
+    toast(`測位中… ${fixes.length}回（誤差 約${Math.round(pos.coords.accuracy)}m）`, 9000);
+    if (fixes.length >= 5 && pos.coords.accuracy <= 5) finish();
+  }, (err) => {
+    if (fixes.length) return;
+    done = true;
+    clearTimeout(timer);
+    if (id != null) navigator.geolocation.clearWatch(id);
+    toast(`位置情報を取得できません（${err.message}）`);
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+});
+
+// ---------- 距離リング（グリーンからの残り距離） ----------
+// カートナビや距離杭の表示と照らし合わせて、自分の位置を正確に置くための目盛り
+const ringOffsetM = () => (settings.ringOffsetYd || 0) * M.YD;   // エッジ基準ならセンターまでの差を足す
+let ringLabels = [];
+function renderRings() {
+  ringLabels.forEach((m) => m.remove());
+  ringLabels = [];
+  const src = map.getSource('rings');
+  if (!src) return;
+  const h = holes[state.hole];
+  if (!state.showRings || !h) { src.setData(empty); return; }
+  const g = greenOf(h);
+  const step = settings.unit === 'yd' ? M.YD : 1;   // 表示単位で10刻み
+  const brgLabel = G.bearing(g, h.tee) + 0.3;   // ティー方向から少し横にずらして、狙い線と重ならないようにする
+  const features = [];
+  for (let d = 30; d <= 300; d += 10) {
+    const r = d * step + ringOffsetM();
+    const major = d % 50 === 0;
+    const ring = Array.from({ length: 97 }, (_, i) => G.destination(g, (i / 96) * 2 * Math.PI, r));
+    features.push({ type: 'Feature', properties: { major }, geometry: { type: 'LineString', coordinates: ring } });
+    if (major) {
+      const el = Object.assign(document.createElement('div'), { className: 'mk-ring', textContent: `${d}` });
+      ringLabels.push(new maplibregl.Marker({ element: el }).setLngLat(G.destination(g, brgLabel, r)).addTo(map));
+    }
+  }
+  src.setData({ type: 'FeatureCollection', features });
+}
+function renderRingToggle() {
+  $('#btnRings').classList.toggle('on', state.showRings);
+  $('#btnRings').textContent = state.showRings ? 'リング 表示' : 'リング 非表示';
+}
+$('#btnRings').addEventListener('click', () => {
+  state.showRings = !state.showRings;
+  renderRingToggle(); renderRings(); persist();
+});
+renderRingToggle();
+// カート・杭の残り距離で打つ位置を補正: いまの位置の「グリーンから見た方向」は保ち、距離だけ合わせる
+$('#btnCalib').addEventListener('click', () => {
+  const h = holes[state.hole];
+  if (!h) return toast('ホールを選んでから使ってください');
+  const g = greenOf(h);
+  const ref = settings.ringOffsetYd ? 'エッジ' : 'センター';
+  const unit = settings.unit === 'yd' ? 'y' : 'm';
+  const k = settings.unit === 'yd' ? M.YD : 1;
+  const cur = Math.round(Math.max(0, G.distance(g, state.ball) - ringOffsetM()) / k);
+  const v = parseFloat(prompt(`カート・距離杭の表示（グリーン${ref}まで、${unit}）`, cur));
+  if (!Number.isFinite(v) || v <= 0) return;
+  bakeAim();
+  setBall(G.destination(g, G.bearing(g, state.ball), v * k + ringOffsetM()));
+  toast(`グリーン${ref}まで ${v}${unit} の位置に補正しました`);
+  scheduleRecompute(); persist();
 });
 
 // ---------- ホール ----------
 function renderHoleSelect() {
-  const opts = ['<option value="">フリー</option>'];
+  const opts = [`<option value="">${course.short ?? ''} フリー</option>`];
   for (let i = 1; i <= course.holeCount; i++) {
-    opts.push(`<option value="${i}">${i}番${holes[i] ? '' : '（未登録）'}</option>`);
+    const inf = course.info?.[i];
+    opts.push(`<option value="${i}">${i}番${inf ? ` P${inf.par} ${inf.yd}y` : ''}${holes[i] ? '' : '（未登録）'}</option>`);
   }
   $('#hole').innerHTML = opts.join('');
   $('#hole').value = state.hole;
@@ -432,24 +567,52 @@ function renderHoleMarkers() {
   holeMarkers.forEach((m) => m.remove());
   holeMarkers = [];
   for (const [no, h] of Object.entries(holes)) {
+    const active = greenOf(h);
     const g = Object.assign(document.createElement('div'), { className: 'mk-hole', textContent: no });
     const t = Object.assign(document.createElement('div'), { className: 'mk-tee' });
-    holeMarkers.push(new maplibregl.Marker({ element: g }).setLngLat(h.green).addTo(map));
+    holeMarkers.push(new maplibregl.Marker({ element: g }).setLngLat(active).addTo(map));
     holeMarkers.push(new maplibregl.Marker({ element: t }).setLngLat(h.tee).addTo(map));
+    // 使っていない方のグリーンは小さく表示
+    const other = active === h.green ? h.green2 : h.green;
+    if (twoGreens && other) {
+      const o = Object.assign(document.createElement('div'), { className: 'mk-hole2', textContent: active === h.green ? 'B' : 'A' });
+      holeMarkers.push(new maplibregl.Marker({ element: o }).setLngLat(other).addTo(map));
+    }
   }
 }
+function renderGreenToggle() {
+  $('#btnGreen').hidden = !twoGreens;
+  $('#btnGreen').textContent = `${state.greenSel}G`;
+}
+$('#btnGreen').addEventListener('click', () => {
+  const h0 = holes[state.hole];
+  const before = h0 ? greenOf(h0) : null;
+  state.greenSel = state.greenSel === 'A' ? 'B' : 'A';
+  // 狙いがグリーンに置かれていたら、切り替えた方のグリーンへ移す
+  if (h0 && before && G.distance(aimPoint(), before) < 8) {
+    state.aimBase = G.destination(state.ball, G.bearing(state.ball, greenOf(h0)), G.distance(state.ball, greenOf(h0)));
+    state.dirOffset = 0;
+    $('#dir').value = 0;
+    $('#dirOut').textContent = '0°';
+  }
+  renderGreenToggle(); renderHoleMarkers(); renderRings();
+  const h = holes[state.hole];
+  if (h && !h.green2 && state.greenSel === 'B') toast(`${state.hole}番はBグリーン未登録のため Aグリーンを使います`);
+  scheduleRecompute(); persist();
+});
+renderGreenToggle();
 
 function goHole(no) {
   const h = holes[no];
   if (!h) return;
-  const brg = G.bearing(h.tee, h.green);
-  const len = G.distance(h.tee, h.green);
-  state.ball = h.tee;
-  ballMk.setLngLat(h.tee);
+  const green = greenOf(h);
+  const brg = G.bearing(h.tee, green);
+  const len = G.distance(h.tee, green);
+  setBall(h.tee);
   // ティーショットの狙い: グリーンが届く距離ならグリーン、そうでなければドライバー平均キャリー地点
   const altF = M.airCarryFactor(dem.get(h.tee), settings.courseTemp, settings);
   const longest = Math.max(...Object.values(stats).map((s) => s.carryMean * settings.carryFactor * altF));
-  state.aimBase = len <= longest * 1.05 ? h.green : G.destination(h.tee, brg, longest);
+  state.aimBase = len <= longest * 1.05 ? green : G.destination(h.tee, brg, longest);
   state.dirOffset = 0;
   $('#dir').value = 0;
   $('#dirOut').textContent = '0°';
@@ -459,7 +622,8 @@ function goHole(no) {
   const pl = M.playsLike(G.distance(h.tee, state.aimBase), dh, 45, state.wind, settings, altF);
   state.club = M.recommendClub(stats, pl, settings) || state.club;
   state.autoClub = true;
-  const cam = map.cameraForBounds([h.tee, h.green].reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(h.tee, h.tee)),
+  renderRings();
+  const cam = map.cameraForBounds([h.tee, green].reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(h.tee, h.tee)),
     { bearing: deg(brg), padding: { top: 70, bottom: setSheetPadding() + 20, left: 40, right: 40 }, maxZoom: 18.5 });
   map.easeTo({ ...cam, bearing: deg(brg), duration: 600 });
   scheduleRecompute();
@@ -469,35 +633,54 @@ function goHole(no) {
 function startEdit(no) {
   state.editing = { hole: no, step: 'tee' };
   $('#bannerText').textContent = `${no}番: ティーの位置をタップ`;
+  $('#bannerSkip').hidden = true;
   $('#banner').hidden = false;
 }
 function endEdit() {
   state.editing = null;
   $('#banner').hidden = true;
 }
+function finishEdit(h) {
+  const no = state.editing.hole;
+  holes[no] = h;
+  S.save(`holes.${course.id}`, holes);
+  endEdit();
+  renderHoleSelect();
+  renderHoleMarkers();
+  renderHoleStatus();
+  const inf = course.info?.[no];
+  const len = (g) => fmtD(G.distance(h.tee, g));
+  toast(`${no}番を登録（${len(h.green)}${h.green2 ? `・B ${len(h.green2)}` : ''}${inf ? ` ／ 公式 ${inf.yd}y` : ''}）`, 4000);
+  goHole(no);
+}
 function handleEditClick(p) {
   const ed = state.editing;
   if (ed.step === 'tee') {
     ed.tee = p;
     ed.step = 'green';
-    $('#bannerText').textContent = `${ed.hole}番: グリーン中心をタップ`;
+    $('#bannerText').textContent = `${ed.hole}番: ${twoGreens ? 'Aグリーン' : 'グリーン'}中心をタップ`;
     return;
   }
-  holes[ed.hole] = { tee: ed.tee, green: p };
-  S.save(`holes.${course.id}`, holes);
-  const no = ed.hole;
-  endEdit();
-  renderHoleSelect();
-  renderHoleMarkers();
-  renderHoleStatus();
-  toast(`${no}番を登録（${fmtD(G.distance(holes[no].tee, holes[no].green))}）`);
-  goHole(no);
+  if (ed.step === 'green' && twoGreens) {
+    ed.green = p;
+    ed.step = 'green2';
+    $('#bannerText').textContent = `${ed.hole}番: Bグリーン中心をタップ`;
+    $('#bannerSkip').hidden = false;
+    return;
+  }
+  if (ed.step === 'green2') return finishEdit({ tee: ed.tee, green: ed.green, green2: p });
+  finishEdit({ tee: ed.tee, green: p });
 }
+$('#bannerSkip').addEventListener('click', () => {
+  const ed = state.editing;
+  if (ed?.step === 'green2') finishEdit({ tee: ed.tee, green: ed.green });
+});
 
 $('#hole').addEventListener('change', (e) => {
   state.hole = e.target.value;
   endEdit();
   if (!state.hole) { persist(); return; }
+  renderRings();
   if (holes[state.hole]) goHole(state.hole);
   else startEdit(state.hole);
 });
@@ -514,6 +697,9 @@ $('#btnSettings').addEventListener('click', () => { fillSettings(); dlg.showModa
 
 const pctKeys = ['windHead', 'windTail'];
 function fillSettings() {
+  $('#courseSel').innerHTML = courseList.map((c) => `<option value="${c.id}">${c.name}</option>`).join('');
+  $('#courseSel').value = course.id;
+  $('#ringOffset').value = settings.ringOffsetYd ?? 0;
   $('#imagery').value = settings.imagery;
   $('#esriKey').value = settings.esriKey;
   $('#unit').value = settings.unit;
@@ -553,14 +739,20 @@ function readSettings() {
     windHead: num('windHead', 1.4) / 100,
     windTail: num('windTail', 1.0) / 100,
     windCross: num('windCross', 1.2) / 100,
+    ringOffsetYd: num('ringOffset', 0),
   };
   S.save('settings', settings);
   if (imageryTemplate() !== prevImagery) applyImagery();
   rebuildStats();
   renderStatTable();
+  renderRings();
   scheduleRecompute();
 }
-dlg.querySelectorAll('input[type=number], input#esriKey, input#useEstimates, select').forEach((el) => el.addEventListener('change', readSettings));
+$('#courseSel').addEventListener('change', (e) => {
+  S.save('courseId', e.target.value);
+  location.reload();
+});
+dlg.querySelectorAll('input[type=number], input#esriKey, input#useEstimates, select:not(#courseSel)').forEach((el) => el.addEventListener('change', readSettings));
 
 function renderDataStatus() {
   const n = Object.values(stats).reduce((s, v) => s + v.n, 0);
@@ -681,4 +873,4 @@ if ('serviceWorker' in navigator) {
 }
 
 // デバッグ・検証用
-window.__golf = { state, stats, settings: () => settings, dem, map, recompute };
+window.__golf = { state, stats, settings: () => settings, holes: () => holes, dem, map, recompute };
