@@ -3,6 +3,7 @@ import * as G from './geo.js';
 import { Dem, demUrl } from './dem.js';
 import * as S from './store.js';
 import { hdrContours } from './contour.js';
+import * as A from './areas.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -30,6 +31,8 @@ let shotData = S.load('shotdata', null); // { shots: [{club, carry, side, landin
 let stats = {};
 let clubs = [];
 let holes = { ...course.holes, ...S.load(`holes.${course.id}`, {}) };
+// OB・池・バンカー・グリーンの範囲（端末で編集したらその一覧を優先。無ければコースファイル同梱分）
+let areas = S.load(`areas.${course.id}`, null) ?? course.areas ?? [];
 
 // 打つ位置などの画面状態はコースごとに保存（旧形式 'ui' は木曽駒のものとして引き継ぐ）
 const uiKey = `ui.${course.id}`;
@@ -49,6 +52,7 @@ const state = {
   showRings: ui.showRings ?? true,
   greenSel: ui.greenSel ?? 'A',   // 2グリーンのコースで使うグリーン
   gpsAcc: null,                   // 直近のGPS測位 { center, radius }
+  areaEdit: null,                 // エリア編集中 { type, pts: [], del: bool }
 };
 
 const twoGreens = course.greens === 2;
@@ -128,7 +132,7 @@ function applyImagery() {
   map.removeLayer('photo');
   map.removeSource('photo');
   map.addSource('photo', imagerySource());
-  map.addLayer({ id: 'photo', type: 'raster', source: 'photo' }, map.getLayer('ell-fill') ? 'ell-fill' : undefined);
+  map.addLayer({ id: 'photo', type: 'raster', source: 'photo' }, map.getStyle().layers[0]?.id);
 }
 const map = new maplibregl.Map({
   container: 'map',
@@ -176,7 +180,10 @@ const LEVELS = [
 ];
 const empty = { type: 'FeatureCollection', features: [] };
 map.on('load', () => {
-  for (const id of ['rings', 'gps', 'ell', 'dots', 'lines', 'center']) map.addSource(id, { type: 'geojson', data: empty });
+  for (const id of ['areas', 'rings', 'gps', 'ell', 'dots', 'lines', 'center', 'draft']) map.addSource(id, { type: 'geojson', data: empty });
+  map.addLayer({ id: 'areas-fill', type: 'fill', source: 'areas',
+    paint: { 'fill-color': ['get', 'fill'], 'fill-opacity': ['get', 'fillOpacity'] } });
+  map.addLayer({ id: 'areas-line', type: 'line', source: 'areas', paint: { 'line-color': ['get', 'line'], 'line-width': 2 } });
   map.addLayer({ id: 'rings', type: 'line', source: 'rings',
     paint: { 'line-color': '#ffffff', 'line-width': ['case', ['get', 'major'], 1.6, 0.7], 'line-opacity': ['case', ['get', 'major'], 0.85, 0.45] } });
   map.addLayer({ id: 'gps-fill', type: 'fill', source: 'gps', paint: { 'fill-color': '#3b82f6', 'fill-opacity': 0.15 } });
@@ -194,6 +201,10 @@ map.on('load', () => {
     paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-dasharray': [2, 2], 'line-opacity': 0.9 } });
   map.addLayer({ id: 'center', type: 'circle', source: 'center',
     paint: { 'circle-radius': 5, 'circle-color': '#111827', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
+  map.addLayer({ id: 'draft-line', type: 'line', source: 'draft', paint: { 'line-color': '#f472b6', 'line-width': 2.5, 'line-dasharray': [1.5, 1] } });
+  map.addLayer({ id: 'draft-pts', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': 5, 'circle-color': '#f472b6', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
+  renderAreas();
   renderHoleMarkers();
   renderRings();
   if (state.hole && holes[state.hole] && !ui.ball) goHole(state.hole);
@@ -203,6 +214,7 @@ map.on('load', () => {
 map.on('click', (e) => {
   const p = e.lngLat.toArray();
   if (state.editing) return handleEditClick(p);
+  if (state.areaEdit) return handleAreaClick(p);
   if (state.tapMode === 'ball') {
     bakeAim();
     setBall(p);
@@ -282,6 +294,17 @@ function recompute() {
   const hDisp = dh == null ? '標高取得中' : `${dh >= 0 ? '↑' : '↓'}${Math.abs(dh).toFixed(1)}m`;
   const hole = holes[state.hole];
   const toGreen = hole ? G.distance(toLL(meanXY), greenOf(hole)) : null;
+  // 着弾点をエリアごとに数える（選択中ホールのグリーンだけを「グリーン」とする）
+  const targetGreen = hole ? A.greenContaining(areas, greenOf(hole)) : null;
+  const usedTypes = A.AREA_ORDER.filter((t) => areas.some((a) => a.type === t));
+  let areaLine = '';
+  if (usedTypes.length) {
+    const { counts, n } = A.classify(pts, origin, areas, targetGreen);
+    const pct = (c) => `${Math.round((c / n) * 100)}%`;
+    areaLine = `<div class="area-probs">着弾 ${usedTypes.map((t) =>
+      `<span style="color:${A.AREA_TYPES[t].text}">${A.AREA_TYPES[t].label} <b>${pct(counts[t])}</b></span>`).join('・')}・その他 ${pct(counts.other)}</div>`;
+  }
+  const edges = targetGreen ? A.greenEdges(origin, greenOf(hole), targetGreen) : null;
 
   distEl.textContent = fmtD(aimDist);
   $('#info').innerHTML = `
@@ -290,7 +313,8 @@ function recompute() {
       <span class="sub">（${stat.estimated ? `<b>推定</b>: ${stat.estimated.from.map(lbl).join('・')}から補間` : `${stat.n}球`}・練習時比 ${fmtPct(state.altF / stat.practiceAir - 1)}）</span></div>
     <div>狙い <b>${fmtD(aimDist)}</b>・高低差 <b>${hDisp}</b>${state.wind.speed ? `・風 ${windLabel()}` : ''}
       → 実質 <span class="em">${fmtD(pl)}</span>　おすすめ <span class="em">${state.recClub ? lbl(state.recClub) : '—'}</span></div>
-    <div>着弾中心 <b>${fmtD(sm.along)}</b> ${side(sm.side)}${toGreen != null ? `・グリーンまで残り <b>${fmtD(toGreen)}</b>` : ''}</div>
+    ${areaLine}
+    <div>着弾中心 <b>${fmtD(sm.along)}</b> ${side(sm.side)}${toGreen != null ? `・グリーンまで残り <b>${fmtD(toGreen)}</b>` : ''}${edges ? `・G手前 ${fmtD(edges.front)}／奥 ${fmtD(edges.back)}` : ''}</div>
     <div class="sub">80%範囲 前後 ${fmtN(sm.alongLo)}–${fmtD(sm.alongHi)}・左右 ${side(sm.sideLo)}〜${side(sm.sideHi)}
       ／ 標高: ${dem.lastSource ?? '—'}${baseIsSample && !shotData ? ' ／ <b>サンプルデータ</b>' : ''}</div>`;
   renderClubs();
@@ -718,6 +742,7 @@ function fillSettings() {
   renderDataStatus();
   renderStatTable();
   renderHoleStatus();
+  renderAreaStatus();
 }
 function readSettings() {
   const num = (id, d) => { const v = parseFloat($(`#${id}`).value); return Number.isFinite(v) ? v : d; };
@@ -816,6 +841,110 @@ $('#btnSample').addEventListener('click', () => {
   renderDataStatus(); renderStatTable(); scheduleRecompute();
 });
 
+// ---------- エリア（OB・池・バンカー・グリーン）の登録 ----------
+function renderAreas() {
+  const src = map.getSource('areas');
+  if (!src) return;
+  src.setData({ type: 'FeatureCollection', features: areas.map((a) => ({ type: 'Feature',
+    properties: { ...A.AREA_TYPES[a.type], type: a.type }, geometry: { type: 'Polygon', coordinates: [a.ring] } })) });
+}
+function saveAreas() {
+  if (!S.save(`areas.${course.id}`, areas)) toast('端末への保存に失敗しました');
+  renderAreas(); renderAreaStatus(); scheduleRecompute();
+}
+function renderDraft() {
+  const ed = state.areaEdit;
+  const src = map.getSource('draft');
+  if (!src) return;
+  if (!ed || !ed.pts.length) { src.setData(empty); }
+  else {
+    const line = ed.pts.length >= 2 ? [{ type: 'Feature', geometry: { type: 'LineString', coordinates: [...ed.pts, ...(ed.pts.length >= 3 ? [ed.pts[0]] : [])] } }] : [];
+    src.setData({ type: 'FeatureCollection', features: [...line, ...ed.pts.map((p) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: p } }))] });
+  }
+  if (!ed) return;
+  const label = A.AREA_TYPES[ed.type].label;
+  $('#areaMsg').textContent = ed.del
+    ? '削除モード: 消したいエリアをタップ'
+    : `${label}: 角を順にタップ（${ed.pts.length}点）${ed.pts.length >= 3 ? '→ 完了' : ''}`;
+  $$('#areaType button').forEach((b) => b.classList.toggle('on', !ed.del && b.dataset.v === ed.type));
+  $('#areaDel').classList.toggle('on', ed.del);
+  $('#areaDone').disabled = ed.pts.length < 3;
+  $('#areaUndo').disabled = !ed.pts.length;
+}
+function startAreaEdit() {
+  endEdit();
+  state.areaEdit = { type: S.load('areaType', 'bunker'), pts: [], del: false };
+  $('#areaBar').hidden = false;
+  document.body.classList.add('area-editing');
+  renderDraft();
+}
+function endAreaEdit() {
+  state.areaEdit = null;
+  $('#areaBar').hidden = true;
+  document.body.classList.remove('area-editing');
+  renderDraft();
+}
+function handleAreaClick(p) {
+  const ed = state.areaEdit;
+  if (ed.del) {
+    // 優先順の低い（内側に描かれやすい）エリアから探す
+    const hit = [...areas].sort((a, b) => A.AREA_ORDER.indexOf(b.type) - A.AREA_ORDER.indexOf(a.type)).find((a) => A.inside(p, a.ring));
+    if (!hit) return toast('エリアの内側をタップしてください');
+    if (!confirm(`この${A.AREA_TYPES[hit.type].label}を削除しますか？`)) return;
+    areas = areas.filter((a) => a !== hit);
+    saveAreas();
+    return toast('削除しました');
+  }
+  ed.pts.push(p);
+  renderDraft();
+}
+$('#btnAreaEdit').addEventListener('click', () => (state.areaEdit ? endAreaEdit() : startAreaEdit()));
+$('#areaType').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b || !state.areaEdit) return;
+  state.areaEdit = { ...state.areaEdit, type: b.dataset.v, del: false };
+  S.save('areaType', b.dataset.v);
+  renderDraft();
+});
+$('#areaUndo').addEventListener('click', () => { state.areaEdit?.pts.pop(); renderDraft(); });
+$('#areaDone').addEventListener('click', () => {
+  const ed = state.areaEdit;
+  if (!ed || ed.pts.length < 3) return;
+  areas = [...areas, { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, type: ed.type, ring: [...ed.pts, ed.pts[0]] }];
+  ed.pts = [];
+  saveAreas();
+  renderDraft();
+  toast(`${A.AREA_TYPES[ed.type].label}を登録しました（続けて次を囲めます）`);
+});
+$('#areaDel').addEventListener('click', () => {
+  if (!state.areaEdit) return;
+  state.areaEdit = { ...state.areaEdit, pts: [], del: !state.areaEdit.del };
+  renderDraft();
+});
+$('#areaExit').addEventListener('click', endAreaEdit);
+
+function renderAreaStatus() {
+  const n = (t) => areas.filter((a) => a.type === t).length;
+  $('#areaStatus').textContent = A.AREA_ORDER.map((t) => `${A.AREA_TYPES[t].label} ${n(t)}`).join('・');
+}
+$('#btnAreaExport').addEventListener('click', async () => {
+  const json = JSON.stringify(areas);
+  $('#areaJson').value = json;
+  try { await navigator.clipboard.writeText(json); toast('コピーしました'); } catch { toast('下の欄からコピーしてください'); }
+});
+$('#btnAreaImport').addEventListener('click', () => {
+  try {
+    const list = JSON.parse($('#areaJson').value);
+    if (!Array.isArray(list) || !list.every((a) => A.AREA_TYPES[a.type] && Array.isArray(a.ring))) throw new Error();
+    const ids = new Set(areas.map((a) => a.id));
+    areas = [...areas, ...list.filter((a) => !ids.has(a.id))];
+    saveAreas();
+    toast('エリアを読み込みました');
+  } catch {
+    toast('JSONの形式が正しくありません');
+  }
+});
+
 function renderHoleStatus() {
   const n = Object.keys(holes).length;
   $('#holeStatus').textContent = `${n} / ${course.holeCount} ホール登録済み`;
@@ -873,4 +1002,4 @@ if ('serviceWorker' in navigator) {
 }
 
 // デバッグ・検証用
-window.__golf = { state, stats, settings: () => settings, holes: () => holes, dem, map, recompute };
+window.__golf = { state, stats, settings: () => settings, holes: () => holes, areas: () => areas, dem, map, recompute };

@@ -29,6 +29,16 @@
 
   <div id="banner" hidden><span id="bannerText"></span><button id="bannerSkip" hidden>なし</button><button id="bannerCancel">やめる</button></div>
   <div id="toast" hidden></div>
+  <div id="areaBar" hidden>
+    <div class="seg" id="areaType">
+      <button data-v="ob">OB</button><button data-v="water">池</button><button data-v="bunker">バンカー</button><button data-v="green">グリーン</button>
+    </div>
+    <div id="areaMsg"></div>
+    <div class="area-btns">
+      <button id="areaUndo">1つ戻す</button><button id="areaDone" class="primary">完了</button>
+      <button id="areaDel">削除モード</button><button id="areaExit">終了</button>
+    </div>
+  </div>
   <div id="legend" aria-label="凡例">
     <div class="lg-title">着弾範囲</div>
     <div><i class="sw sw50"></i>50%</div>
@@ -56,6 +66,7 @@
       <button id="btnDots" class="pill">点群 表示</button>
       <button id="btnRings" class="pill">リング 表示</button>
       <button id="btnCalib" class="pill" title="カートナビや距離杭の残り距離で打つ位置を合わせる">残り距離で補正</button>
+      <button id="btnAreaEdit" class="pill" title="OB・池・バンカー・グリーンの範囲を登録">エリア登録</button>
       <button id="btnWind" class="pill">風 なし</button>
     </div>
     <div id="windPanel" hidden>
@@ -153,6 +164,15 @@
       <button id="btnHoleImport" class="ghost">貼り付けて読込</button>
     </div>
     <textarea id="holeJson" rows="3" placeholder="ホールJSON"></textarea>
+
+    <h3>エリア（OB・池・バンカー・グリーン）</h3>
+    <p id="areaStatus" class="status"></p>
+    <p class="hint">画面下の「エリア登録」で、航空写真の上で角をタップして囲みます。OBは白杭の外側をざっくり大きめに囲めば十分です。</p>
+    <div class="btns">
+      <button id="btnAreaExport">書き出し（コピー）</button>
+      <button id="btnAreaImport" class="ghost">貼り付けて読込</button>
+    </div>
+    <textarea id="areaJson" rows="3" placeholder="エリアJSON"></textarea>
 
     <h3>オフライン</h3>
     <p class="hint">電波の弱いコース向け。ラウンド前にWi-Fiで実行すると、航空写真と標高データを端末に保存します（約5〜10MB）。</p>

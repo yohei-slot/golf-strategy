@@ -1,11 +1,11 @@
 // アプリ本体: 取得できればネットワーク優先（更新を反映）、圏外ならキャッシュ
 // 地理院タイル: キャッシュ優先（一度取ったものは圏外でも表示できる）
-const SHELL = 'shell-v5';
+const SHELL = 'shell-v6';
 const TILES = 'gsi-tiles-v1';
 const TILE_HOSTS = ['cyberjapandata.gsi.go.jp', 'server.arcgisonline.com', 'ibasemaps-api.arcgis.com'];
 const SHELL_FILES = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest',
-  'js/app.js', 'js/model.js', 'js/contour.js', 'js/geo.js', 'js/dem.js', 'js/store.js',
+  'js/app.js', 'js/model.js', 'js/contour.js', 'js/areas.js', 'js/geo.js', 'js/dem.js', 'js/store.js',
   'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css',
   'courses/index.json', 'courses/kisokoma.json', 'courses/nishisendai.json', 'data/shots.csv', 'data/sessions.json', 'sample/shots_sample.csv', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
