@@ -16,7 +16,8 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys()
-    .then((keys) => Promise.all(keys.filter((k) => ![SHELL, TILES].includes(k)).map((k) => caches.delete(k))))
+    // 同じドメインの別アプリ（商用版 /shotmap/ など）のキャッシュは消さない。自分の古い版だけ削除する
+    .then((keys) => Promise.all(keys.filter((k) => /^(shell|gsi-tiles)-v\d+$/.test(k) && ![SHELL, TILES].includes(k)).map((k) => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
